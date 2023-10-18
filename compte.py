@@ -3,11 +3,12 @@ import sys
 from enum import Enum
 from datetime import date
 import re
+from typing import List
 import openpyxl
-from extendedopenpyxl import load_workbook, save_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Border, Side
 from openpyxl.worksheet.datavalidation import DataValidation
-from openpyxl.formatting.rule import  CellIsRule, FormulaRule
+from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from datetime import datetime
 from openpyxl.chart import (
     PieChart,
@@ -33,6 +34,14 @@ SHEET_ROW_START_BORDER = Border(left=Side(border_style="medium", color="000000")
 SHEET_ROW_MIDDLE_BORDER = Border(left=Side(border_style="dotted", color="000000"), bottom=Side(border_style="thin", color="000000"), right=Side(border_style="dotted", color="000000"))
 SHEET_ROW_END_BORDER = Border(left=Side(border_style="dotted", color="000000"), bottom=Side(border_style="thin", color="000000"), right=Side(border_style="medium", color="000000"))
 
+# -- VARIOUS CONST --
+FILE_TO_OPEN = 'Dépenses.xlsx'
+
+START_WORKSHEET_YEAR = 2022
+START_WORKSHEET_MONTH = 9
+END_WORKSHEET_YEAR = 2023 # TODO Remove
+END_WORKSHEET_MONTH = 8 # TODO Remove
+
 # -- List type depense --
 SHEET_SOMME_TYPE_DEPENSE = [
     ('=Data!C2', '=SUMIF($C$2:$C$150,K3,$E$2:$E$150)'),
@@ -44,14 +53,14 @@ SHEET_SOMME_TYPE_DEPENSE = [
     ('=Data!C8', '=SUMIF($C$2:$C$150,K9,$E$2:$E$150)'),
     ('=Data!C9', '=SUMIF($C$2:$C$150,K10,$E$2:$E$150)')]
 
-class typeEnum(Enum) :
+class TypeEnum(Enum) :
     Entre = "Entré"
     Sortie = "Sortie"
     TransfereSortie = "Transfère Sortie"
     TransfereEntre = "Transfère Entré"
     Empty = ""
 
-class monthEnum(Enum):
+class MonthEnum(Enum):
     Janvier= 1
     Février= 2
     Mars= 3
@@ -65,12 +74,12 @@ class monthEnum(Enum):
     Novembre = 11
     Décembre = 12
 
-class compteEnum(Enum) :
+class CompteEnum(Enum) :
     LCL = "LCL"
     Bourso = "Boursorama"
 
-class operation:
-    def __init__(self, type, description, montant, date, compte):
+class Operation:
+    def __init__(self, type : TypeEnum, description :str, montant : float, date : date, compte : CompteEnum):
         self.type = type
         self.description = description
         self.montant = montant
@@ -81,78 +90,140 @@ class operation:
 
 # Main function
 def main():
-    # Check arguments
-    if(len(sys.argv) != 3) :
-        print('Usage : python compte.py <lcl csv export> <bourso csv export>')
-        return
+    # Get the arguments
+    print(getOptions(sys.argv))
+    input, output, lcl, bourso = getOptions(sys.argv)
     
-    operations = []
-    operations.extend(convertLCLFile(sys.argv[1]))
-    operations.extend(convertBoursoFile(sys.argv[2]))
-    exportOperations(operations)
-    compteExcel(operations)
+    print (input)
+
+    # Read the operations
+    operations : List[Operation] = []
+    if(lcl):
+        operations.extend(convertLCLFile(lcl))
+    if(bourso):
+        operations.extend(convertBoursoFile(bourso))
+
+    print('Find', len(operations), 'operation.s')
+
+    # Sort the operations
+    sortedOperations = sorted(operations, key=lambda operation: operation.date)
+    exportOperations(sortedOperations)
+    compteExcel(sortedOperations, input, output)
+
+# get the options of the file
+def getOptions(arguments : List[str]):
+    lcl : str = None
+    bourso : str = None
+    input: str = None
+    output : str = None
+    
+    for pointer in range(1, len(arguments), 2):
+        if arguments[pointer] == "--lcl" :
+            lcl = arguments[pointer + 1]
+        elif arguments[pointer] == '--bourso' :
+            bourso = arguments[pointer + 1]
+        elif arguments[pointer] == '-i':
+            input = arguments[pointer + 1]
+        elif arguments[pointer] == '-o':
+            output = arguments[pointer + 1]
+        else :
+            print('Unknow argument : ', arguments[pointer])
+            print('Usage : python compte.py [--lcl <lcl_csv_path>, --bourso <boursorama_csv_path>, -i <input_specified_file>, -o <output_specified_file>]')
+            exit(-1)
+    
+    return (input, output, lcl, bourso)
 
 # Convert a csv export form lcl to use it in the program
-def convertLCLFile(file):
+def convertLCLFile(file: str) -> List[Operation]:
     with open(file) as csvfile:
         lclLine = csv.reader(csvfile, delimiter=';')
-        lclOperation = []
+        lclOperation : List[Operation] = []
         for id, row in enumerate(lclLine) :
             if len(row) == 8:
                 day, month, year = re.search("(\d{2})\/(\d{2})\/(\d{4})",row[0]).groups()
                 dateEvent = date(int(year), int(month), int(day))
                 montant = abs(float(row[1].replace(',','.')))
                 description = row[4]+row[5]
-                type = typeEnum.Empty if re.match("VIR", description) else typeEnum.Sortie if re.match("-", row[1]) else typeEnum.Entre
-                lclOperation.append(operation(type, description, str(montant).replace('.', ','), dateEvent, compteEnum.LCL))
+                type = TypeEnum.Empty if re.match("VIR", description) else TypeEnum.Sortie if re.match("-", row[1]) else TypeEnum.Entre
+                lclOperation.append(Operation(type, description, str(montant).replace('.', ','), dateEvent, CompteEnum.LCL))
         return lclOperation
 
 # Convert a csv export from boursorama to use in the program
-def convertBoursoFile(file):
+def convertBoursoFile(file : str) -> List[Operation]:
     with open(file) as csvfile:
         boursoline = csv.reader(csvfile, delimiter=';')
-        boursoOperation = []
+        boursoOperation : List[Operation]= []
         for id, row in enumerate(boursoline):
             if id != 0 :
                 year, month, day = re.search("(\d{4})-(\d{2})-(\d{2})", row[0]).groups()
                 dateEvent = date(int(year), int(month), int(day))
                 montant = abs(float(row[5].replace(',','.')))
                 description = row[2]
-                type = typeEnum.Empty if re.match("VIR", description) else typeEnum.Sortie if re.match("-", row[5]) else typeEnum.Entre
-                boursoOperation.append(operation(type, description, str(montant).replace('.', ','), dateEvent, compteEnum.Bourso))
+                type = TypeEnum.Empty if re.match("VIR", description) else TypeEnum.Sortie if re.match("-", row[5]) else TypeEnum.Entre
+                boursoOperation.append(Operation(type, description, str(montant).replace('.', ','), dateEvent, CompteEnum.Bourso))
         return boursoOperation
 
-
-def exportOperations(operations):
-    sortedOperations = sorted(operations, key=lambda operation: operation.date)
+# Export the operations as a CSV file
+def exportOperations(operations : List[Operation]) -> None:
     with open('./export.csv', 'w', newline='') as file:
         writer = csv.writer(file)
-        for id, row in enumerate(sortedOperations):
+        for id, row in enumerate(operations):
             writer.writerow(["", row.type.value,"", row.compte.value, row.montant, "NOK", row.date, "", row.description])
 
 # Update the excel file
-def compteExcel(operations):
-    # fileDep = pd.read_excel('Dépenses_ntest.xlsx', engine='openpyxl')
-    # print(fileDep.head())
-
+def compteExcel(operations : List[Operation], input : str, output : str) -> None:
     # Load the excel file 
-    workbook = openpyxl.load_workbook('Dépenses_test.xlsx', keep_links=False)
-    createNewSheet(workbook, 5, 2023)
-    addOperations(workbook, 5, 2023, operations)
-    manageStyle(workbook, 5, 2023)
+    fileToOpen : str = input if input else FILE_TO_OPEN 
+    workbook = openpyxl.load_workbook(fileToOpen, keep_links=False)
+
+    # Manage Style of old workbooks
+    yearToFind : int = START_WORKSHEET_YEAR
+    monthToFind : int = START_WORKSHEET_MONTH # TODO Change with 1
+    firstWorkbookFind : bool = False
+    while not firstWorkbookFind or findSheet(workbook, monthToFind, yearToFind) and (monthToFind != END_WORKSHEET_MONTH or yearToFind != END_WORKSHEET_YEAR): # TODO Remove END_WORKSHEET... Tests
+        if firstWorkbookFind :
+            manageStyle(workbook, monthToFind, yearToFind)
+        else :
+            firstWorkbookFind = findSheet(workbook, monthToFind, yearToFind)
+        if monthToFind == 12:
+            monthToFind = 1
+            yearToFind += 1
+        else :
+            monthToFind += 1
+
+    # Split operations by month/year
+    operationsByMonthYear : dict[date, List[Operation]] = {}
+    for operation in operations :
+        monthDate = date(operation.date.year, operation.date.month, 1)
+        if(not operationsByMonthYear.get(monthDate)) :
+            operationsByMonthYear[monthDate] = []
+        operationsByMonthYear[monthDate].append(operation)
+
+    # Add the operations
+    for key in operationsByMonthYear :
+        keyYear = key.year
+        keyMonth = key.month
+        # Create sheet if not allready exist
+        if (keyYear == yearToFind and keyMonth > monthToFind) or (keyYear > yearToFind):
+            createNewSheet(workbook, keyMonth, keyYear)
+            manageStyle(workbook, keyMonth, keyYear)
+        # Add operations
+        addOperations(workbook, keyMonth, keyYear, operationsByMonthYear.get(key))
 
     # Save and close the new excel file
-    workbook.save('Dépenses_test'+str(datetime.timestamp(datetime.now()))+".xlsx")
-    # workbook.close()
+    fileToSave = output if output else 'Dépenses_'+str(datetime.timestamp(datetime.now()))+".xlsx"
+    workbook.save(fileToSave)
+    workbook.close()
 
+# TODO Fix the function
 # Find if a sheet exist depending of this month & year
-def findSheet(workbook, month, year):
-    sheetToFind =  monthEnum._value2member_map_[month].name + ' ' + str(year)
+def findSheet(workbook : Workbook, month : int, year : int):
+    sheetToFind =  MonthEnum._value2member_map_[month].name + ' ' + str(year)
     return workbook.sheetnames.index(sheetToFind)
 
 # Create a new sheet of data at the expected month & year
-def createNewSheet(workbook, month, year):
-    title = monthEnum._value2member_map_[month].name + ' ' + str(year)
+def createNewSheet(workbook : Workbook, month: int, year : int):
+    title : str = MonthEnum._value2member_map_[month].name + ' ' + str(year)
     workbook.create_sheet(title)
     sheet = workbook[title]
 
@@ -182,24 +253,19 @@ def createNewSheet(workbook, month, year):
     if month == 1 :
         statistiqueSheet.merge_cells(start_row = rowToAddIndex - 1, start_column = 1, end_row=rowToAddIndex-1, end_column=4)
         statistiqueSheet.cell(row=rowToAddIndex - 1, column=1).value = year
-    statistiqueSheet.cell(row=rowToAddIndex, column = 1).value = monthEnum._value2member_map_[month].name
+    statistiqueSheet.cell(row=rowToAddIndex, column = 1).value = MonthEnum._value2member_map_[month].name
     statistiqueSheet.cell(row=rowToAddIndex, column = 2).value = "=SUMIF('"+title+"'!$B$2:$B$200, Data!$A$2, '"+title+"'!$E$2:$E$200)"
     statistiqueSheet.cell(row=rowToAddIndex, column = 3).value = "=SUMIF('"+title+"'!$B$2:$B$200, Data!$A$3, '"+title+"'!$E$2:$E$200)"
     statistiqueSheet.cell(row=rowToAddIndex, column = 4).value = "="+statistiqueSheet.cell(row=rowToAddIndex, column = 2).coordinate+"-"+statistiqueSheet.cell(row=rowToAddIndex, column = 3).coordinate
 
-    # sheet['A1'].fill = PatternFill("solid", fgColor="ff0000")
-    # my_fill = openpyxl.styles.fills.PatternFill(patternType='solid', bgColor='9C0006')
-    # sheet.conditional_formatting.add('$B$2:$E$150', FormulaRule(formula=['$B2=Data!$A$3'], stopIfTrue=True, fill=my_fill))
-
 # Add the information of the operations
-def addOperations(workbook, month, year, operationList):
-    print("add Operations")
+def addOperations(workbook : Workbook, month : int, year : int, operationList : List[Operation]):
     # Open the sheet to find
-    sheetToFind =  monthEnum._value2member_map_[month].name + ' ' + str(year)
+    sheetToFind : str =  MonthEnum._value2member_map_[month].name + ' ' + str(year)
     sheet = workbook[sheetToFind]
 
     # Find the line where there in no data
-    rowEmpty = 2 # begin at line 2, line 1 have the titles
+    rowEmpty : int = 2 # begin at line 2, line 1 have the titles
     while (sheet.cell(row=rowEmpty, column=5).value !=  None): # See if the cell "Valeur" is empty
         rowEmpty += 1
     
@@ -216,8 +282,9 @@ def addOperations(workbook, month, year, operationList):
         # Increment the line to implement
         rowEmpty += 1
 
-def manageStyle(workbook, month, year):
-    sheetToFind =  monthEnum._value2member_map_[month].name + ' ' + str(year)
+# Manage the style of a page
+def manageStyle(workbook : Workbook, month : int, year : int):
+    sheetToFind =  MonthEnum._value2member_map_[month].name + ' ' + str(year)
     sheet = workbook[sheetToFind]
 
     # Manage column width
